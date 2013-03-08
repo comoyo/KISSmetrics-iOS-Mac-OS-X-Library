@@ -162,4 +162,6 @@
 + (NSString *)macVersionNumber;
 #endif
 
+@property NSTimeInterval retryInterval;
+
 @end

@@ -38,7 +38,6 @@ static KISSMetricsAPI *sharedAPI = nil;
 @interface KISSMetricsAPI() 
 
 @property (nonatomic, retain) NSMutableArray *sendQueue;
-@property (nonatomic, retain) NSTimer *timer;
 @property (nonatomic, retain) NSString *key;
 @property (nonatomic, retain) NSString *lastIdentity;
 @property (nonatomic, retain) NSDictionary *propsToSend;
@@ -63,11 +62,12 @@ static KISSMetricsAPI *sharedAPI = nil;
 
 @implementation KISSMetricsAPI {
     NSOperationQueue *operationQueue;
+    BOOL timerActive;
+    dispatch_queue_t retryQueue;
 }
 
 
 @synthesize sendQueue;
-@synthesize timer;
 @synthesize key;
 @synthesize lastIdentity;
 @synthesize propsToSend;
@@ -184,11 +184,13 @@ static KISSMetricsAPI *sharedAPI = nil;
         self.propsToSend = nil; 
     }
     //Note: can't send yet, will do so when entering foreground.
-    
-    
+
     [self applicationWillEnterForeground:nil];
     operationQueue = [[NSOperationQueue alloc] init];
     [operationQueue setMaxConcurrentOperationCount:4];
+    timerActive = NO;
+    retryQueue = dispatch_queue_create("KISSMetricsAPI.retry", DISPATCH_QUEUE_SERIAL);
+
 }
 
 + (id)allocWithZone:(NSZone *)zone
@@ -225,13 +227,6 @@ static KISSMetricsAPI *sharedAPI = nil;
 {
     @synchronized(self)
     {
-        //If timer is != nil, then we cancel it.
-        if(self.timer != nil)
-        {
-            [self.timer invalidate];
-            self.timer = nil;
-        }
-        
         [self archiveData]; //Not 100% sure this is needed, but can't hurt I guess.
     }
 }
@@ -262,11 +257,10 @@ static KISSMetricsAPI *sharedAPI = nil;
     NSString *nextAPICall = nil;
     @synchronized(self)
     {
-        //If timer is != nil, then we cancel it.
-        if (self.timer != nil)
+        //Clear any active timer
+        if (timerActive)
         {
-            [self.timer invalidate];
-            self.timer = nil;
+            timerActive = NO;
         }
         //If nothing to do return.
         if ([self.sendQueue count] == 0)
@@ -327,6 +321,7 @@ static KISSMetricsAPI *sharedAPI = nil;
             InfoLog(@"KISSMetricsAPI: CATASTROPHIC FAILURE (%@) for URL (%@). Dropping call..",[error localizedDescription], [self.sendQueue objectAtIndex:0]);
             return;
         }
+        BOOL dispatchRetry = NO;
         @synchronized(self)
         {
             //Effectively cycle through the URLs so as to not have one messed up URL block all others.
@@ -335,14 +330,24 @@ static KISSMetricsAPI *sharedAPI = nil;
                 [self.sendQueue addObject:url];
             }
             [self archiveData];
+            if (!timerActive)
+            {
+                dispatchRetry = YES;
+                timerActive = YES;
+            }
         }
-        if (self.timer == nil)//Only if there's no other timer do we schedule a retry.
+        if (dispatchRetry)
         {
-            self.timer = [NSTimer scheduledTimerWithTimeInterval:RETRY_INTERVAL
-                                                          target:self
-                                                        selector:@selector(send)
-                                                        userInfo:nil
-                                                         repeats:NO];
+            __weak KISSMetricsAPI *weakSelf = self;
+            double delayInSeconds = self.retryInterval;
+            dispatch_time_t popTime = dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delayInSeconds * NSEC_PER_SEC));
+            dispatch_after(popTime, retryQueue, ^(void){
+                __strong KISSMetricsAPI *strongSelf = weakSelf;
+                if (strongSelf)
+                {
+                    [strongSelf send];
+                }
+            });
         }
     }
 }
