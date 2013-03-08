@@ -39,7 +39,6 @@ static KISSMetricsAPI *sharedAPI = nil;
 
 @property (nonatomic, retain) NSMutableArray *sendQueue;
 @property (nonatomic, retain) NSTimer *timer;
-@property (nonatomic, retain) NSURLConnection *existingConnection;
 @property (nonatomic, retain) NSString *key;
 @property (nonatomic, retain) NSString *lastIdentity;
 @property (nonatomic, retain) NSDictionary *propsToSend;
@@ -62,12 +61,13 @@ static KISSMetricsAPI *sharedAPI = nil;
 
 
 
-@implementation KISSMetricsAPI
+@implementation KISSMetricsAPI {
+    NSOperationQueue *operationQueue;
+}
 
 
 @synthesize sendQueue;
 @synthesize timer;
-@synthesize existingConnection;
 @synthesize key;
 @synthesize lastIdentity;
 @synthesize propsToSend;
@@ -187,9 +187,11 @@ static KISSMetricsAPI *sharedAPI = nil;
     
     
     [self applicationWillEnterForeground:nil];
+    operationQueue = [[NSOperationQueue alloc] init];
+    [operationQueue setMaxConcurrentOperationCount:4];
 }
 
-+ (id)allocWithZone:(NSZone *)zone 
++ (id)allocWithZone:(NSZone *)zone
 {
     @synchronized(self) {
         if (sharedAPI == nil) 
@@ -230,12 +232,6 @@ static KISSMetricsAPI *sharedAPI = nil;
             self.timer = nil;
         }
         
-        //If existing connection is != nil, cancel it. This will stop any further callbacks.
-        if(self.existingConnection != nil)
-        {
-            [self.existingConnection cancel];
-        }
-        
         [self archiveData]; //Not 100% sure this is needed, but can't hurt I guess.
     }
 }
@@ -260,154 +256,96 @@ static KISSMetricsAPI *sharedAPI = nil;
     }
 }
 
-
-
-
 //Actually sends the next API call.
 - (void) send
 {
-    
-    
+    NSString *nextAPICall = nil;
     @synchronized(self)
     {
         //If timer is != nil, then we cancel it.
-        if(self.timer != nil)
+        if (self.timer != nil)
         {
             [self.timer invalidate];
             self.timer = nil;
         }
-        
-        
-        //Ignore this if we have an ongoing connection, as once it completes (successfully or not), it will proceed to the next one.
-        if(self.existingConnection != nil)
-        {
-            return;
-        }
-        
-        NSString *nextAPICall = nil;
-        
         //If nothing to do return.
-        if([self.sendQueue count] == 0)
+        if ([self.sendQueue count] == 0)
         {
             return;
         }
-        
+        //Remove the entry we are processing currently
         nextAPICall = [self.sendQueue objectAtIndex:0];
-        
-#if TARGET_OS_IPHONE
-        //Networking code.
-        [[UIApplication sharedApplication] setNetworkActivityIndicatorVisible:YES];
-#endif
-        
-        NSURL *url = [NSURL URLWithString:nextAPICall];
-        NSMutableURLRequest *request = [[NSMutableURLRequest alloc] initWithURL:url];
-        
-        self.existingConnection = [NSURLConnection connectionWithRequest:request delegate:self];
-        [self.existingConnection start];
-
-        // If called from a background thread
-        if(![NSThread isMainThread]){
-            
-            // Keep the thread alive until the request completes or fails
-            while(self.existingConnection) {
-                [[NSRunLoop currentRunLoop] runMode:NSDefaultRunLoopMode beforeDate:[NSDate distantFuture]];
-            }
-        }
-        
+        [self.sendQueue removeObjectAtIndex:0];
+        [self archiveData];
     }
-    
+#if TARGET_OS_IPHONE
+    //Networking code.
+    [[UIApplication sharedApplication] setNetworkActivityIndicatorVisible:YES];
+#endif
+
+    NSURL *url = [NSURL URLWithString:nextAPICall];
+    NSMutableURLRequest *request = [[NSMutableURLRequest alloc] initWithURL:url];
+    [request setAllowsCellularAccess:NO]; // TODO: Change to use an application property
+    [request setHTTPShouldUsePipelining:YES];
+    __weak KISSMetricsAPI *weakSelf = self;
+    [NSURLConnection sendAsynchronousRequest:request
+                                       queue:operationQueue
+                           completionHandler:^(NSURLResponse *response, NSData *data, NSError *error) {
+                               __strong KISSMetricsAPI *strongSelf = weakSelf;
+                               if (strongSelf) {
+                                   [strongSelf connectionCompletedWithResponse:(NSHTTPURLResponse *)response
+                                                                           url:nextAPICall
+                                                                          data:data
+                                                                         error:error];
+                               }
+                           }];
 }
 
 #pragma mark -
 #pragma mark NSURLConnection Callbacks
-- (void)connection:(NSURLConnection *)connection didReceiveResponse:(NSHTTPURLResponse *)response 
+- (void)connectionCompletedWithResponse:(NSHTTPURLResponse *)response url:(NSString *)url data:(NSData *)data error:(NSError *)error
 {
-    if ([response statusCode] == 200 || [response statusCode] == 304) 
+   if (error == nil)
     {
-        
-        //Got HTTP 200 or HTTP 304, which means we can remove the top most API call from the queue.
-        @synchronized(self)
+        if (!([response statusCode] == 200 || [response statusCode] == 304))
         {
-            [self.sendQueue removeObjectAtIndex:0];
-            [self archiveData];
+            InfoLog(@"KISSMetricsAPI: INFO - Failure %@", [NSHTTPURLResponse localizedStringForStatusCode:[response statusCode]]);
         }
-    } 
-    else 
-    {
-        InfoLog(@"KISSMetricsAPI: INFO - Failure %@", [NSHTTPURLResponse localizedStringForStatusCode:[response statusCode]]);
-    }
-}
-
-
-
-
-- (void)connection:(NSURLConnection *)connection didFailWithError:(NSError *)error 
-{
-    
-#if TARGET_OS_IPHONE
-    [[UIApplication sharedApplication] setNetworkActivityIndicatorVisible:NO];
-#endif
-    
-    
-    if(error.code == NSURLErrorBadURL ||
-       error.code == NSURLErrorUnsupportedURL ||
-       error.code == NSURLErrorDataLengthExceedsMaximum)
-    {
-        //This is v. bad, as it means we've not correctly encoded the URL, that somehow the URL scheme is messed up or that the dev has made too long a URL. Should never/rarely happen, but nice to tell the dev if it does..
-        @synchronized(self)
+        else
         {
+            //Now can try the next one, as this one was successful (might not be one, but that's okay).
+            [self send];
+        }
+    }
+    else if (data == nil)
+    {
+        if (error.code == NSURLErrorBadURL ||
+            error.code == NSURLErrorUnsupportedURL ||
+            error.code == NSURLErrorDataLengthExceedsMaximum)
+        {
+            //This is v. bad, as it means we've not correctly encoded the URL, that somehow the URL scheme is messed up or that the dev has made too long a URL. Should never/rarely happen, but nice to tell the dev if it does..
             InfoLog(@"KISSMetricsAPI: CATASTROPHIC FAILURE (%@) for URL (%@). Dropping call..",[error localizedDescription], [self.sendQueue objectAtIndex:0]);
-            [self.sendQueue removeObjectAtIndex:0]; // <- We're dropping data..
+            return;
+        }
+        @synchronized(self)
+        {
+            //Effectively cycle through the URLs so as to not have one messed up URL block all others.
+            if ([self.sendQueue count] >= 1)
+            {
+                [self.sendQueue addObject:url];
+            }
             [self archiveData];
         }
-    }
-    
-    
-    
-    @synchronized(self)
-    {
-        self.existingConnection = nil;
-        
-        //Effectively cycle through the URLs so as to not have one messed up URL block all others.
-        if ([self.sendQueue count] > 1)
+        if (self.timer == nil)//Only if there's no other timer do we schedule a retry.
         {
-            NSString *failedURL = [self.sendQueue objectAtIndex:0];
-            [self.sendQueue removeObjectAtIndex:0];
-            [self.sendQueue addObject:failedURL];
-        }
-        [self archiveData];
-        
-        
-        if(self.timer == nil)//Only if there's no other timer do we schedule a retry.
-        {
-            self.timer = [NSTimer scheduledTimerWithTimeInterval:RETRY_INTERVAL 
-                                                          target:self 
-                                                        selector:@selector(send) 
-                                                        userInfo:nil 
+            self.timer = [NSTimer scheduledTimerWithTimeInterval:RETRY_INTERVAL
+                                                          target:self
+                                                        selector:@selector(send)
+                                                        userInfo:nil
                                                          repeats:NO];
         }
     }
-    
-    
 }
-- (void)connectionDidFinishLoading:(NSURLConnection *)connection 
-{
-    
-    @synchronized(self)
-    {
-        self.existingConnection = nil;
-    }
-    
-#if TARGET_OS_IPHONE
-    [[UIApplication sharedApplication] setNetworkActivityIndicatorVisible:NO];
-#endif
-    
-    //Now can try the next one, as this one was successful (might not be one, but that's okay).
-    [self send];
-}
-
-
-
 
 #pragma mark -
 #pragma archival methods
@@ -525,25 +463,34 @@ static KISSMetricsAPI *sharedAPI = nil;
 //Record event.
 - (void)recordEvent:(NSString *)name withProperties:(NSDictionary *)properties
 {
-    
+    [self recordEvent:name withProperties:properties eventTime:nil];
+}
+
+- (void)recordEvent:(NSString *)name withProperties:(NSDictionary *)properties eventTime:(NSDate *)eventTime
+{
+
     //Make sure name is good
     if(name == nil || [name length] == 0)
     {
         InfoLog(@"KISSMetricsAPI: WARNING - Tried to record event with empty or nil name. Ignoring.");
         return;
     }
-    
+
     //Must URL escape names.
     NSString *escapedEventName = [self urlEncode:name];
-    
+
     //Need to url escape identity, as could have spaces, etc. lastIdentiy will always be non-nil at this point.
     NSString *escapedIdentity = [self urlEncode:self.lastIdentity];
-    
+
     //We'll store and use the actual time of the record event in case of disconnected operation.
-    int actualTimeOfevent = (int)[[NSDate date] timeIntervalSince1970];
-    
+    int actualTimeOfevent = 0;
+    if (eventTime != nil) {
+        actualTimeOfevent = (int)[eventTime timeIntervalSince1970];
+    } else {
+        actualTimeOfevent = (int)[[NSDate date] timeIntervalSince1970];
+    }
+
     NSString *theURL = [NSString stringWithFormat:@"%@%@?_k=%@&_p=%@&_d=1&_t=%i&_n=%@", BASE_URL, EVENT_PATH, self.key, escapedIdentity,actualTimeOfevent,escapedEventName];
-    
     if(properties != nil)
     {
         NSString *additionalURL = [self urlizeProps:properties];
@@ -552,8 +499,8 @@ static KISSMetricsAPI *sharedAPI = nil;
             theURL = [NSString stringWithFormat:@"%@%@", theURL,additionalURL];
         }
     }
-    
-    
+
+
     @synchronized(self)
     {
         //Queue up call.
@@ -564,6 +511,7 @@ static KISSMetricsAPI *sharedAPI = nil;
     //Push it out right not if possible.
     [self send];
 }
+
 
 
 - (void)setProperties:(NSDictionary *)properties
