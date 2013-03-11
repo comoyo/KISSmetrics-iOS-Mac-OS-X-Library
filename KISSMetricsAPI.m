@@ -299,6 +299,11 @@ static KISSMetricsAPI *sharedAPI = nil;
 #pragma mark NSURLConnection Callbacks
 - (void)connectionCompletedWithResponse:(NSHTTPURLResponse *)response url:(NSString *)url data:(NSData *)data error:(NSError *)error
 {
+#if TARGET_OS_IPHONE
+    //Networking code.
+    [[UIApplication sharedApplication] setNetworkActivityIndicatorVisible:NO];
+#endif
+
    if (error == nil)
     {
         if (!([response statusCode] == 200 || [response statusCode] == 304))
