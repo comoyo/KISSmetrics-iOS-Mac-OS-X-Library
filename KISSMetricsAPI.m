@@ -102,6 +102,7 @@ static KISSMetricsAPI *sharedAPI = nil;
 
 - (void) initializeAPIWithKey:(NSString *)apiKey
 {
+    NSLog(@"%s %@ %@", __func__, apiKey,[NSKeyedUnarchiver unarchiveObjectWithFile:IDENTITY_PATH]);
     self.key = apiKey;
     self.lastIdentity = [NSKeyedUnarchiver unarchiveObjectWithFile:IDENTITY_PATH];
     if(!self.lastIdentity) //If there's no identity, generate a UUID as a temp.
@@ -566,7 +567,8 @@ static KISSMetricsAPI *sharedAPI = nil;
 
 - (void)identify:(NSString *)identity
 {
-    
+    NSLog(@"%s %@", __func__, identity);
+
     if(identity == nil || [identity length] == 0)
     {
         InfoLog(@"KISSMetricsAPI: WARNING - attempted to use nil or empty identity. Ignoring.");
@@ -576,7 +578,13 @@ static KISSMetricsAPI *sharedAPI = nil;
     
     NSString *escapedOldIdentity = [self urlEncode:self.lastIdentity];
     NSString *escapedNewIdentity = [self urlEncode:identity];
-    
+
+    //Ignore the call, if there is no change.
+    if([escapedOldIdentity compare:escapedNewIdentity] == NSOrderedSame)
+    {
+        return;
+    }
+
     
     NSString *theURL = [NSString stringWithFormat:@"%@%@?_k=%@&_p=%@&_n=%@", BASE_URL, ALIAS_PATH, self.key, escapedOldIdentity,escapedNewIdentity];
     
