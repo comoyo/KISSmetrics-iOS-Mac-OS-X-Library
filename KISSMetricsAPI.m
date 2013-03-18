@@ -280,7 +280,9 @@ static KISSMetricsAPI *sharedAPI = nil;
 
     NSURL *url = [NSURL URLWithString:nextAPICall];
     NSMutableURLRequest *request = [[NSMutableURLRequest alloc] initWithURL:url];
-    [request setAllowsCellularAccess:NO]; // TODO: Change to use an application property
+    if ([request respondsToSelector:@selector(setAllowsCellularAccess:)]) {
+        [request setAllowsCellularAccess:NO]; // TODO: Change to use an application property
+    }
     [request setHTTPShouldUsePipelining:YES];
     __weak KISSMetricsAPI *weakSelf = self;
     [NSURLConnection sendAsynchronousRequest:request
