@@ -149,6 +149,7 @@
 
 
 #if !TARGET_OS_IPHONE
+
 /**
  * macVersionNumber
  * 
@@ -159,7 +160,7 @@
  * You can return back the current version of Mac OS X that you're running.  This will return back a 
  * formatted NSString.  This is included in the logging props and is only defined for Mac OS X.
  */
-+ (NSString *)macVersionNumber;
+- (NSString *)macVersionNumber;
 #endif
 
 @property NSTimeInterval retryInterval;
