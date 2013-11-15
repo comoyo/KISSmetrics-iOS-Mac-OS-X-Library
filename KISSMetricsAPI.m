@@ -103,6 +103,7 @@ static KISSMetricsAPI *sharedAPI = nil;
 - (void) initializeAPIWithKey:(NSString *)apiKey
 {
     NSLog(@"%s %@ %@", __func__, apiKey,[NSKeyedUnarchiver unarchiveObjectWithFile:IDENTITY_PATH]);
+    _disable3G = NO;
     self.key = apiKey;
     self.lastIdentity = [NSKeyedUnarchiver unarchiveObjectWithFile:IDENTITY_PATH];
     if(!self.lastIdentity) //If there's no identity, generate a UUID as a temp.
@@ -280,8 +281,8 @@ static KISSMetricsAPI *sharedAPI = nil;
 
     NSURL *url = [NSURL URLWithString:nextAPICall];
     NSMutableURLRequest *request = [[NSMutableURLRequest alloc] initWithURL:url];
-    if ([request respondsToSelector:@selector(setAllowsCellularAccess:)]) {
-        [request setAllowsCellularAccess:NO]; // TODO: Change to use an application property
+    if (self.disable3G && [request respondsToSelector:@selector(setAllowsCellularAccess:)]) {
+        [request setAllowsCellularAccess:NO];
     }
     [request setHTTPShouldUsePipelining:YES];
     __weak KISSMetricsAPI *weakSelf = self;

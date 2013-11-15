@@ -164,5 +164,6 @@
 #endif
 
 @property NSTimeInterval retryInterval;
+@property BOOL disable3G;
 
 @end
